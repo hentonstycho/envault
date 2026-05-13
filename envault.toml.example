@@ -1,0 +1,27 @@
+# envault.toml — configuration for envault secrets manager
+# Copy this file to envault.toml and adjust values for your project.
+# Add envault.toml to .gitignore if it contains sensitive path information.
+
+[envault]
+# Required: the SSM Parameter Store path prefix to sync from.
+# All parameters under this path will be pulled.
+ssm_path = "/myapp/prod"
+
+# Optional: destination .env file (default: ".env")
+env_file = ".env"
+
+# Optional: AWS region (default: "us-east-1" or AWS_DEFAULT_REGION env var)
+aws_region = "us-east-1"
+
+# Optional: AWS CLI profile name to use for authentication
+# aws_profile = "my-profile"
+
+# Optional: strip the ssm_path prefix from parameter names when writing keys.
+# e.g. /myapp/prod/DATABASE_URL -> DATABASE_URL  (default: true)
+strip_path_prefix = true
+
+# Optional: extra static key=value pairs to append to the .env file.
+# These are NOT fetched from SSM — useful for local-only overrides.
+[envault.extra_vars]
+# APP_ENV = "development"
+# LOG_LEVEL = "debug"
