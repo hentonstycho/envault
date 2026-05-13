@@ -1,141 +1,142 @@
-"""CLI entry point for envault.
+"""CLI entry-point for envault."""
+from __future__ import annotations
 
-Usage:
-    python -m envault [OPTIONS] COMMAND [ARGS]...
-
-Commands:
-    sync    Pull parameters from SSM and write to .env file.
-    check   Verify connectivity and config without writing any files.
-"""
-
-import sys
 import argparse
 import logging
-from pathlib import Path
+import sys
+from typing import List, Optional
 
-from envault.config import load_config, EnvaultConfig
-from envault.ssm import SSMClient, SSMError
-from envault.sync import sync, SyncError
+from envault.config import load_config
+from envault.rotate import check_rotation
+from envault.ssm import SSMClient
+from envault.sync import SyncError, sync
 
 logger = logging.getLogger("envault")
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _setup_logging(verbose: bool) -> None:
-    """Configure root logger based on verbosity flag."""
     level = logging.DEBUG if verbose else logging.INFO
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-    logging.getLogger("envault").setLevel(level)
-    logging.getLogger("envault").addHandler(handler)
+    logging.basicConfig(format="%(levelname)s %(message)s", level=level)
 
 
-def cmd_sync(config: EnvaultConfig, args: argparse.Namespace) -> int:
-    """Execute the sync command: fetch SSM params and write .env file."""
-    client = SSMClient(
-        region=config.aws_region,
-        profile=config.aws_profile,
-    )
+# ---------------------------------------------------------------------------
+# Sub-commands
+# ---------------------------------------------------------------------------
 
-    output_path = Path(args.output) if args.output else Path(config.output_file)
-
-    logger.info("Syncing parameters to %s", output_path)
-
+def cmd_sync(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    client = SSMClient(region=cfg.aws_region, profile=cfg.aws_profile)
     try:
-        written = sync(config=config, client=client, output_path=output_path)
-    except SSMError as exc:
-        logger.error("SSM error: %s", exc)
-        return 1
+        result = sync(cfg, client)
     except SyncError as exc:
-        logger.error("Sync error: %s", exc)
+        logger.error("sync failed: %s", exc)
         return 1
-
-    logger.info("Wrote %d variable(s) to %s", written, output_path)
+    if result.has_changes:
+        logger.info(result.summary())
+    else:
+        logger.info("No changes.")
     return 0
 
 
-def cmd_check(config: EnvaultConfig, _args: argparse.Namespace) -> int:
-    """Execute the check command: validate config and SSM connectivity."""
-    client = SSMClient(
-        region=config.aws_region,
-        profile=config.aws_profile,
-    )
-
-    logger.info("Checking connectivity for region=%s", config.aws_region)
-
-    # Attempt a lightweight describe call by fetching a single known path.
-    # We treat a permission/not-found error as a connectivity success.
+def cmd_check(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    client = SSMClient(region=cfg.aws_region, profile=cfg.aws_profile)
     try:
-        for mapping in config.parameters:
-            path = mapping.get("path") or mapping.get("name")
-            if path:
-                client.get_parameters_by_path(path, recursive=False)
-                break
-    except SSMError as exc:
-        # A ClientError response still means we reached AWS successfully.
-        logger.debug("SSM probe returned: %s", exc)
-
-    logger.info("Config OK. AWS region: %s, output: %s", config.aws_region, config.output_file)
+        params = client.get_parameters_by_path(cfg.ssm_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("check failed: %s", exc)
+        return 1
+    logger.info("Found %d parameter(s) under %s", len(params), cfg.ssm_path)
     return 0
 
+
+def cmd_rotate(args: argparse.Namespace) -> int:
+    """Report staleness of synced secrets based on the audit log."""
+    cfg = load_config(args.config)
+    paths: List[str] = args.paths or [cfg.ssm_path]
+    threshold: int = args.threshold
+    audit_file: str = args.audit_file or getattr(cfg, "audit_file", "envault-audit.jsonl")
+
+    report = check_rotation(paths, audit_file, threshold_days=threshold)
+
+    for status in report.statuses:
+        level = logging.WARNING if status.is_stale else logging.INFO
+        logger.log(level, status.summary())
+
+    if report.has_stale:
+        logger.warning(
+            "%d path(s) are stale (threshold: %d days). Consider re-syncing.",
+            len(report.stale_paths),
+            threshold,
+        )
+        return 1
+    logger.info("All paths are within the rotation threshold.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Parser
+# ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build and return the argument parser."""
     parser = argparse.ArgumentParser(
         prog="envault",
-        description="Sync AWS SSM parameters into a local .env file.",
+        description="Sync secrets from AWS SSM Parameter Store into .env files.",
     )
-    parser.add_argument(
-        "--config",
-        default="envault.toml",
-        metavar="FILE",
-        help="Path to envault.toml config file (default: envault.toml).",
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable debug logging.",
-    )
+    parser.add_argument("-c", "--config", default="envault.toml", help="Config file path.")
+    parser.add_argument("-v", "--verbose", action="store_true")
 
-    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
-    subparsers.required = True
+    sub = parser.add_subparsers(dest="command")
 
-    # sync sub-command
-    sync_parser = subparsers.add_parser("sync", help="Fetch parameters and write .env file.")
-    sync_parser.add_argument(
-        "--output", "-o",
-        metavar="FILE",
+    sub.add_parser("sync", help="Sync parameters to .env file.")
+    sub.add_parser("check", help="Verify SSM connectivity and list parameters.")
+
+    rot = sub.add_parser("rotate", help="Check whether secrets are due for rotation.")
+    rot.add_argument(
+        "paths",
+        nargs="*",
+        metavar="PATH",
+        help="SSM paths to check (defaults to ssm_path in config).",
+    )
+    rot.add_argument(
+        "--threshold",
+        type=int,
+        default=30,
+        metavar="DAYS",
+        help="Number of days before a secret is considered stale (default: 30).",
+    )
+    rot.add_argument(
+        "--audit-file",
         default=None,
-        help="Override the output .env file path from config.",
+        metavar="FILE",
+        help="Path to the audit log (overrides config).",
     )
-
-    # check sub-command
-    subparsers.add_parser("check", help="Validate config and AWS connectivity.")
 
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Main entry point; returns an exit code."""
+def main(argv: Optional[List[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-
     _setup_logging(args.verbose)
 
-    try:
-        config = load_config(Path(args.config))
-    except FileNotFoundError:
-        logger.error("Config file not found: %s", args.config)
-        return 1
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to load config: %s", exc)
-        return 1
-
-    commands = {
+    handlers = {
         "sync": cmd_sync,
         "check": cmd_check,
+        "rotate": cmd_rotate,
     }
-    return commands[args.command](config, args)
+
+    handler = handlers.get(args.command)
+    if handler is None:
+        parser.print_help()
+        sys.exit(0)
+
+    sys.exit(handler(args))
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == "__main__":  # pragma: no cover
+    main()
