@@ -1,27 +1,48 @@
-# envault.toml — configuration for envault secrets manager
-# Copy this file to envault.toml and adjust values for your project.
-# Add envault.toml to .gitignore if it contains sensitive path information.
+# envault.toml — example configuration
+# Copy to envault.toml and adjust for your project.
 
-[envault]
-# Required: the SSM Parameter Store path prefix to sync from.
-# All parameters under this path will be pulled.
-ssm_path = "/myapp/prod"
+[sync]
+# Default AWS region (can be overridden per profile)
+region = "us-east-1"
 
-# Optional: destination .env file (default: ".env")
-env_file = ".env"
+# Default SSM path prefix for single-profile workflows
+path_prefix = "/myapp/dev"
 
-# Optional: AWS region (default: "us-east-1" or AWS_DEFAULT_REGION env var)
-aws_region = "us-east-1"
+# Output .env file written by `envault sync`
+output = ".env"
 
-# Optional: AWS CLI profile name to use for authentication
-# aws_profile = "my-profile"
+# Recursively fetch all parameters under path_prefix (default: true)
+recursive = true
 
-# Optional: strip the ssm_path prefix from parameter names when writing keys.
-# e.g. /myapp/prod/DATABASE_URL -> DATABASE_URL  (default: true)
-strip_path_prefix = true
+# Audit log location (default: .envault_audit.jsonl)
+audit_log = ".envault_audit.jsonl"
 
-# Optional: extra static key=value pairs to append to the .env file.
-# These are NOT fetched from SSM — useful for local-only overrides.
-[envault.extra_vars]
-# APP_ENV = "development"
-# LOG_LEVEL = "debug"
+# Cache TTL in seconds (default: 300 = 5 min, 0 = disabled)
+cache_ttl = 300
+
+
+# ---------------------------------------------------------------------------
+# Named profiles — use with: envault sync --profile <name>
+# Each profile can target a different SSM path and output file.
+# ---------------------------------------------------------------------------
+
+[profiles.dev]
+path_prefix = "/myapp/dev"
+output     = ".env.dev"
+region     = "us-east-1"
+recursive  = true
+
+[profiles.staging]
+path_prefix = "/myapp/staging"
+output     = ".env.staging"
+region     = "us-east-1"
+
+[profiles.prod]
+path_prefix = "/myapp/prod"
+output     = ".env.prod"
+region     = "us-east-1"
+recursive  = false
+# Extra metadata tags stored in audit entries for this profile
+[profiles.prod.extra_tags]
+environment = "production"
+team        = "platform"
