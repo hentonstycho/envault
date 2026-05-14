@@ -32,6 +32,11 @@ dev = [
     "ruff>=0.4",
 ]
 
+[project.urls]
+"Homepage" = "https://github.com/envault/envault"
+"Bug Tracker" = "https://github.com/envault/envault/issues"
+"Changelog" = "https://github.com/envault/envault/blob/main/CHANGELOG.md"
+
 [project.scripts]
 envault = "envault.cli:main"
 
